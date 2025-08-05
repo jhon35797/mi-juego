@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Sonic Runner Mejorado</title>
+  <style>
+    body {
+      margin: 0;
+      background: linear-gradient(to top, #1976d2, #b3e5fc);
+      font-family: Arial, sans-serif;
+      overflow-x: hidden;
+    }
+
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: linear-gradient(to top, #2196f3, #b3e5fc);
+      border-bottom: 4px solid #4caf50;
+    }
+
+    #continueBtn {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 22px;
+      background: #ff5252;
+      color: #fff;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+      cursor: pointer;
+      transition: background 0.3s ease, transform 0.2s ease;
+      z-index: 10;
+    }
+
+    #continueBtn:hover {
+      background: #ff1744;
+      transform: scale(1.1);
+    }
+
+    h1 {
+      color: #fff;
+      margin: 10px 0 20px;
+      font-size: 26px;
+      text-shadow: 1px 1px 4px #000;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="400"></canvas>
+<button id="continueBtn">Continuar</button>
+<h1>Sonic Runner Mejorado</h1>
+
+<script>
+  const canvas = document.getElementById("gameCanvas");
+  const ctx = canvas.getContext("2d");
+  const continueBtn = document.getElementById("continueBtn");
+
+  const jumpSound = new Audio("sounds/jump.wav");
+  const coinSound = new Audio("sounds/coin.wav");
+  const birdSound = new Audio("sounds/bird.wav");
+  const deathSound = new Audio("sounds/death.wav");
+  let birdSoundTimeout = null;
+
+  let frame = 0, score = 0, distance = 0, lastBonus = -1;
+  let gamePaused = false, startTime = Date.now();
+
+  const sonic = {
+    x: 60, y: 360, width: 40, height: 40,
+    dy: 0, gravity: 0.6, jumpPower: -12,
+    grounded: true, coins: 0, color: "#3366cc",
+    invulnerable: false, invulnTimer: 0
+  };
+
+  let obstacles = [], birds = [], coins = [];
+
+  const birdImage = new Image();
+  birdImage.src = "assets/bird.png";
+
+  document.addEventListener("pointerdown", jump);
+  document.addEventListener("keydown", e => e.code === "Space" && jump());
+
+  function jump() {
+    if (sonic.grounded && !gamePaused) {
+      jumpSound.currentTime = 0;
+      jumpSound.play();
+      sonic.dy = sonic.jumpPower;
+      sonic.grounded = false;
+    }
+  }
+
+  function drawBackground() {
+    ctx.fillStyle = "#b3e5fc";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#4caf50";
+    [200, 600].forEach((x, i) => {
+      ctx.beginPath();
+      ctx.arc(x, 400, 100 + i * 30, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  function drawGround() {
+    for (let x = 0; x < canvas.width; x += 40) {
+      ctx.fillStyle = (x / 40) % 2 === 0 ? "#8d6e63" : "#fbc02d";
+      ctx.fillRect(x, 360, 40, 40);
+    }
+  }
+
+  function drawSonic() {
+    const centerX = sonic.x + 20;
+    const centerY = sonic.y + 20;
+
+    ctx.save();
+    ctx.translate(centerX, centerY);
+    if (!sonic.grounded) {
+      ctx.rotate((frame % 360) * Math.PI / 180);
+    }
+    ctx.fillStyle = (sonic.invulnerable && frame - sonic.invulnTimer < 900) ? "#66ccff" : sonic.color;
+    ctx.beginPath();
+    ctx.arc(0, 0, 20, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function updateArray(arr, speed, spawnFreq, newObj) {
+    if (frame % spawnFreq === 0) arr.push(newObj());
+    arr.forEach(o => o.x -= speed);
+    return arr.filter(o => o.x + o.width > 0);
+  }
+
+  function updateObstacles(currentSpeed) {
+    const types = [
+      () => ({ x: canvas.width, y: 360, width: 30, height: 40, shape: "triangle" }),
+      () => ({ x: canvas.width, y: 340, width: 40, height: 60, shape: "rect" }),
+      () => ({ x: canvas.width, y: 360, width: 60, height: 40, shape: "rect" }),
+      () => ({ x: canvas.width, y: 320, width: 30, height: 80, shape: "triangle" }),
+    ];
+    if (frame % 100 === 0) {
+      const randomObstacle = types[Math.floor(Math.random() * types.length)]();
+      obstacles.push(randomObstacle);
+    }
+    obstacles.forEach(o => o.x -= currentSpeed);
+    obstacles = obstacles.filter(o => o.x + o.width > 0);
+  }
+
+  function updateBirds(currentSpeed) {
+    if (score >= 50) {
+      const birdJustSpawned = frame % 250 === 0;
+      birds = updateArray(birds, currentSpeed + 2, 250, () => ({ x: canvas.width, y: 260, width: 32, height: 32 }));
+
+      if (birdJustSpawned) {
+        birdSound.currentTime = 0;
+        birdSound.play();
+        clearTimeout(birdSoundTimeout);
+        birdSoundTimeout = setTimeout(() => {
+          birdSound.pause();
+          birdSound.currentTime = 0;
+        }, 3000);
+      }
+    }
+  }
+
+  function updateCoins(currentSpeed) {
+    coins = updateArray(coins, currentSpeed - 1, 180, () => ({ x: canvas.width, y: 360, width: 20, height: 20, value: 1 }));
+  }
+
+  function checkCollision() {
+    const enemies = obstacles.concat(birds);
+    for (let e of enemies) {
+      if (isColliding(sonic, e)) {
+        if (sonic.invulnerable && frame - sonic.invulnTimer < 900) return;
+        if (score >= 2) return loseLife();
+        gameOver();
+        return;
+      }
+    }
+
+    coins.forEach((c, i) => {
+      if (isColliding(sonic, c)) {
+        coinSound.currentTime = 0;
+        coinSound.play();
+        sonic.coins++;
+        score++;
+        coins.splice(i, 1);
+      }
+    });
+  }
+
+  function isColliding(a, b) {
+    return a.x < b.x + b.width &&
+           a.x + a.width > b.x &&
+           a.y < b.y + b.height &&
+           a.y + a.height > b.y;
+  }
+
+  function loseLife() {
+    deathSound.currentTime = 0;
+    deathSound.play();
+    gamePaused = true;
+    continueBtn.style.display = "block";
+    continueBtn.onclick = () => {
+      continueBtn.style.display = "none";
+      gamePaused = false;
+      score -= 2;
+      sonic.invulnerable = true;
+      sonic.invulnTimer = frame;
+      update();
+    };
+  }
+
+  function gameOver() {
+    const best = Math.max(score, parseInt(localStorage.getItem("maxScore") || 0));
+    localStorage.setItem("maxScore", best);
+    alert(`💥 ¡Game Over!\nPuntos: ${score}\nRécord: ${best}`);
+    gamePaused = true;
+  }
+
+  function update() {
+    if (gamePaused) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawBackground();
+    drawGround();
+
+    sonic.y += sonic.dy;
+    sonic.dy += sonic.gravity;
+    if (sonic.y >= 360) {
+      sonic.y = 360;
+      sonic.dy = 0;
+      sonic.grounded = true;
+    }
+
+    frame++;
+    distance += 0.25;
+    const currentSpeed = 6 + Math.floor(distance / 500);
+
+    if (Math.floor(distance) % 1000 === 0 && Math.floor(distance) !== lastBonus) {
+      score += 20;
+      lastBonus = Math.floor(distance);
+    }
+
+    updateObstacles(currentSpeed);
+    updateBirds(currentSpeed);
+    updateCoins(currentSpeed);
+
+    drawSonic();
+
+    obstacles.forEach(obj => {
+      ctx.fillStyle = "#2e7d32";
+      if (obj.shape === "triangle") {
+        ctx.beginPath();
+        ctx.moveTo(obj.x, obj.y + obj.height);
+        ctx.lineTo(obj.x + obj.width / 2, obj.y);
+        ctx.lineTo(obj.x + obj.width, obj.y + obj.height);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
+      }
+    });
+
+    birds.forEach(bird => {
+      ctx.drawImage(birdImage, bird.x, bird.y, bird.width, bird.height);
+    });
+
+    drawObjects(coins, "#ffeb3b", "circle");
+    checkCollision();
+
+    if (sonic.invulnerable && frame - sonic.invulnTimer >= 900) sonic.invulnerable = false;
+
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    ctx.fillRect(5, 5, 390, 25);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "14px Arial";
+    let timeElapsed = Math.floor((Date.now() - startTime) / 1000);
+    ctx.fillText(`🪙 ${sonic.coins} | ⭐ ${score} | 📏 ${Math.floor(distance)}m | ⏳ ${timeElapsed}s | 🏆 ${localStorage.getItem("maxScore") || 0}`, 10, 23);
+
+    requestAnimationFrame(update);
+  }
+
+  function drawObjects(arr, color, shape) {
+    ctx.fillStyle = color;
+    arr.forEach(obj => {
+      if (shape === "circle") {
+        ctx.beginPath();
+        ctx.arc(obj.x + 10, obj.y + 10, 10, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+  }
+
+  update();
+</script>
+</body>
+</html>
